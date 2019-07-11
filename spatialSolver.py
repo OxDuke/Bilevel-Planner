@@ -7,34 +7,37 @@
 # Distributed under terms of the MIT license.
 
 """
-planarSolver.py
 
-A solve that solves indoor navigation problem hopefully reliably.
+A solve that solves UAV navigation problem efficiently and reliably.
 """
+# system libraries
 from __future__ import print_function, division
 import sys, os, time
 import itertools
 import copy
 import warnings
 
+# scientific computing libraries
 import numpy as np
 from scipy.sparse import coo_matrix, csc_matrix
 import matplotlib.pyplot as plt
 from scipy.interpolate import BPoly
-
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-import osqp
+# third party libraries
 import mosek
-
-#from pyLib.all import Mute
+from tabulate import tabulate
 
 from libott import loadTGP, construct_P, construct_A, gradient_from_P, gradient_from_A, set_print_level
 from libbezier import Bezier
-from libsqopt import Sqopt
+
 
 # from plotter import piecewisePolyDeriv, evaluatePiecewisePolyWhole, evaluatePiecewisePolyOne2, plotSamples
 # from plot_3d_trajectory import plot3dTrajectory
+
+
+# Some flags
+DO_PLOT_RESULTS = True
 
 
 def print_green(*args, **kwargs):
@@ -162,9 +165,23 @@ class IndoorOptProblem(object):
         """Return coefficients"""
         coef_mat = np.reshape(self.sol, (self.num_box, 3, self.poly_order + 1))
         coef_mat = np.transpose(coef_mat, (0, 2, 1))
+        #import pdb; pdb.set_trace()
         for i in range(self.num_box):
             coef_mat[i] *= self.room_time[i]
         return coef_mat
+
+    def get_coef_matrix2(self):
+        """
+        Return Bezier coefficients
+        """
+        coef_mat = np.reshape(self.sol, (self.poly_order + 1, 3, self.num_box), order='F')
+        coef_mat = coef_mat.transpose((0,2,1))
+        #import pdb;pdb.set_trace()
+        for i in range(self.num_box):
+            coef_mat[:,i,:] *= self.room_time[i]
+        
+        return coef_mat
+
 
     def from_coef_matrix(self, mat_in):
         """Assign values to sol based on the input coefficient matrix."""
@@ -717,45 +734,6 @@ class IndoorQPProblem(IndoorOptProblem):
         return self.solve_once()
 
 
-class IndoorQPProblemOSQP(IndoorQPProblem):
-    """Solve indoor problem using osqp with specific options."""
-    def __init__(self, tgp, tfweight=0, connect_order=2, verbose=False):
-        IndoorQPProblem.__init__(self, tgp, tfweight, connect_order, verbose)
-        self.h_type = "U"
-        self.osqp_verbose = False
-        self.osqp_maxiter = 20000
-        self.osqp_polish = 1
-        self._check_solution_accuracy = False
-
-    def solve_once(self):
-        self.update_prob()
-        use_val = np.concatenate((self.sp_A.data, np.ones(self.n_var)))
-        use_row = np.concatenate((self.sp_A.row, self.n_con + np.arange(self.n_var)))
-        use_col = np.concatenate((self.sp_A.col, np.arange(self.n_var)))
-        sp_A = coo_matrix((use_val, (use_row, use_col)))
-        qp_l = np.concatenate((self.clb, self.xlb))
-        qp_u = np.concatenate((self.cub, self.xub))
-        prob = osqp.OSQP()
-        prob.setup(P=self.sp_P.tocsc(), q=self.qp_q, A=sp_A.tocsc(), l=qp_l, u=qp_u,
-                    verbose=self.osqp_verbose, max_iter=self.osqp_maxiter, polish=self.osqp_polish)
-        results = prob.solve()
-        self.is_solved = results.info.status_val > 0
-        if self.is_solved:
-            self.sol = results.x
-            self.lmd = results.y
-            self.obj = results.info.obj_val + self.tfweight * np.sum(self.room_time)
-        else:
-            self.obj = np.inf
-        if self.verbose:
-            print('Solving status', self.is_solved, self.obj)
-
-    def get_gradient(self):
-        """Calculate the gradient based on dual variables."""
-        lmdy = self.lmd[:self.n_con]
-        lmdz = self.lmd[self.n_con:]
-        return IndoorQPProblem.get_gradient(self, self.sol, lmdy, lmdz)
-
-
 class IndoorQPProblemMOSEK(IndoorQPProblem):
     """Use mosek solver to solve this problem in cvxopt interface or not"""
     def __init__(self, tgp, tfweight=0, connect_order=2, verbose=False):
@@ -815,655 +793,152 @@ class IndoorQPProblemMOSEK(IndoorQPProblem):
         return IndoorQPProblem.get_gradient(self, self.sol, self.lmdy, self.lmdz)
 
 
-class IndoorQPProblemSQOPT(IndoorQPProblem):
-    """Use mosek solver to solve this problem in cvxopt interface or not"""
-    def __init__(self, tgp, tfweight=0, connect_order=2, verbose=False):
-        IndoorQPProblem.__init__(self, tgp, tfweight, connect_order, verbose)
-        self.warm_flag = 0
-
-    def solve_once(self):
-        self.update_prob()
-        # set up A
-        A_sp = self.sp_A.tocsc()
-        # set up H
-        H_sp = self.sp_P.tocsc()
-        # set up solver
-        if hasattr(self, 'solver'):
-            solver = self.solver
-        else:
-            solver = Sqopt(A_sp.shape[1], A_sp.shape[0])
-        #print("here 8")
-        solver.set_H(H_sp.data, H_sp.indices, H_sp.indptr)
-        solver.set_q_zero()
-        solver.set_A(A_sp.data, A_sp.indices, A_sp.indptr)
-        solver.set_bound(self.xlb, self.xub, self.clb, self.cub)
-
-        #with Mute():
-        solver.solve(self.warm_flag)
-
-        #while solver.get_obj() < 0:
-        #    print_yellow('Negative objective detected:', solver.get_obj())
-        #    print('Solve again with cold start!')
-        #    solver.solve(0)
-        #    print("Obj after cold start", solver.get_obj(), solver.get_info() == 1)
-
-
-        # using warm start might give solutions even when the QP is acutually infeasible
-        # we hereby add a checking to make sure that all the bounds are feasible when a warm start is used
-        if self.warm_flag != 0:
-            # check if the bounds are violated
-            #print("slacks", A_sp.dot(solver.get_solution()))
-            #print("lbA", self.clb)
-            #print("ubA", self.cub)
-            # print(np.any(A_sp.dot(solver.get_solution()) < self.clb - 1e-6), np.any(A_sp.dot(solver.get_solution()) > self.cub + 1e-6), np.any(solver.get_solution() < self.xlb - 1e-6), np.any(solver.get_solution() > self.xub + 1e-6))
-            if(np.any(A_sp.dot(solver.get_solution()) < self.clb - 1e-6) or np.any(A_sp.dot(solver.get_solution()) > self.cub + 1e-6) or np.any(solver.get_solution() < self.xlb - 1e-6) or np.any(solver.get_solution() > self.xub + 1e-6)):
-                print_red("Switch to cold start")
-                self.warm_flag = 0
-                solver.solve(self.warm_flag)
-                # print(np.any(A_sp.dot(solver.get_solution()) < self.clb - 1e-6), np.any(A_sp.dot(solver.get_solution()) > self.cub + 1e-6), np.any(solver.get_solution() < self.xlb - 1e-6), np.any(solver.get_solution() > self.xub + 1e-6))
-
-
-        self.warm_flag = 1  # set to 1 after every solve
-        self.solver = solver
-        self.is_solved = solver.get_info() == 1
-        # print("is solved? ", self.is_solved, solver.get_info())
-        if self.is_solved:
-            self.obj = solver.get_obj() + self.tfweight*np.sum(self.room_time)
-            self.sol = solver.get_solution()
-            lmd = solver.get_lambda()
-            #print("here 9")
-            self.lmdz = -lmd[:self.n_var]
-            self.lmdy = -lmd[self.n_var:]
-        else:
-            self.obj = np.inf
-        # print("self.room_time", self.room_time)
-
-    def get_gradient(self):
-        return IndoorQPProblem.get_gradient(self, self.sol, self.lmdy, self.lmdz)
-
-
-def testSQOPTSolver():
-    prob = 20
-    if len(sys.argv) > 1:
-        prob = int(sys.argv[1])
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)
-    tgp.minimizeOrder = 3
-    tgp.trajectoryOrder = 6
-    solver = IndoorQPProblemSQOPT(tgp, verbose=True)
-    t0 = time.time()
-    solver.solve_once()
-    tf = time.time()
-    print('flag %d cost %f' % (solver.is_solved, solver.obj))
-    print('grad ', solver.get_gradient())
-    print('sol ', solver.sol)
-    print("Time consumption: ", tf - t0)
-    
-    poly_coef = solver.get_coef_matrix()
-    
-    np.savez('data/prob%d.npz' % prob, coef=poly_coef, time=solver.room_time)
-
-
-def testIPBackTrack():
+def solveProblem():
     """Test the backtrack line search with IP solver."""
     prob = 11
     if len(sys.argv) > 1:
         prob = int(sys.argv[1])
 
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.trajectoryOrder = 6
-    print("\033[1;91mTesting on problem: %d \033[0m" % prob)
-    print("initial room time", [round(box.t,2) for box in tgp.getCorridor()])
-
-
-    solver = IndoorQPProblemSQOPT(tgp, verbose=False)
-    ts1 = time.time()
-    solver.solve_once()
-    tf1 = time.time()
-    
-    print_green("Use Sqopt + Adaptive LS")
-    initialCost = solver.obj
-    solver.grad_method = 'ours'
-    
-    solver.verbose = False
-    ts2 = time.time()
-    is_okay, converged = solver.refine_time_by_backtrack(max_iter=100, log=True, adaptiveLineSearch=True)
-    tf2 = time.time()
-    print("initial plan cost", initialCost)
-    print('Sqopt refine ', is_okay, converged, solver.converge_reason, solver.obj, 
-                'iter', solver.major_iteration, 'fval', solver.num_prob_solve)
-    with np.printoptions(precision=2, suppress=True):
-        print('Sqopt final time', solver.room_time, np.sum(solver.room_time))
-    sqopt_time = tf2 - ts2 + tf1 - ts1
-    sqopt_once_time = tf1 - ts1
-    print('Sqopt first computation time', sqopt_once_time, 'Sqopt total computation time:', sqopt_time)
-    sqopt_adaptive_convergence = solver.log
-    sqopt_adaptive_convergence[1::2] += sqopt_once_time
-    
+    print_purple("Testing on problem: %d" % prob)
 
     tgp = loadTGP('dataset/tgp_%d.tgp' % prob)  # every time you have to reload from hard disk since it is modified before
+    initial_time_allocation = np.array([box.t for box in tgp.getCorridor()])
+    
+    # we do not limit velocity in the open source implementation
     tgp.doLimitVelocity = False
+    # we minimize jerk
     tgp.minimizeOrder = 3
+    # we use 6-th order piecewise Bezier spline
     tgp.trajectoryOrder = 6
-    print_green("Use Sqopt")
     
-    solver = IndoorQPProblemSQOPT(tgp, verbose=False)
-    ts1 = time.time()
-    solver.solve_once()
-    tf1 = time.time()
-    
-    
-    initialCost = solver.obj
-    solver.grad_method = 'ours'
-    
-    #solver.verbose = True
-    ts2 = time.time()
-    is_okay, converged = solver.refine_time_by_backtrack(max_iter=100, log=True, timeProfile=False, adaptiveLineSearch=False)
-    tf2 = time.time()
-    print("initial plan cost", initialCost)
-    print('Sqopt refine ', is_okay, converged, solver.converge_reason, solver.obj, 
-                'iter', solver.major_iteration, 'fval', solver.num_prob_solve)
-    with np.printoptions(precision=2, suppress=True):
-        print('Sqopt final time', solver.room_time, np.sum(solver.room_time))
-    sqopt_time = tf2 - ts2 + tf1 - ts1
-    sqopt_once_time = tf1 - ts1
-    print('Sqopt first computation time', sqopt_once_time, 'Sqopt total computation time:', sqopt_time)
-    sqopt_convergence = solver.log
-    sqopt_convergence[1::2] += sqopt_once_time
-    # print(solver.log)
-    #print('Time profile: -Grad', solver.timeProfile[::2], 'Percentage: ', 100*np.sum(solver.timeProfile[::2])/sqopt_time)
-    #print('Time profile: -Alpha', solver.timeProfile[1::2], 'Percentage: ', 100*np.sum(solver.timeProfile[1::2])/sqopt_time)
-
-    
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)  # every time you have to reload from hard disk since it is modified before
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.trajectoryOrder = 6
-    print_green("Use OSQP")
-    
-    solver = IndoorQPProblemOSQP(tgp, verbose=False)
-    ts1 = time.time()
-    solver.solve_once()
-    tf1 = time.time()
-
-    initialCost = solver.obj
-    print("initial plan cost", initialCost)
-    print("osqp solved?", solver.is_solved)
-    solver.grad_method = 'ours'
-
-    ts2 = time.time()
-    is_okay, converged = solver.refine_time_by_backtrack(max_iter=100, log=True, adaptiveLineSearch=False)
-    tf2 = time.time()
-
-    print('osqp refine ', is_okay, converged, solver.converge_reason, solver.obj,
-                'iter', solver.major_iteration, 'fval', solver.num_prob_solve)
-    #with np.printoptions(precision=2, suppress=True):
-    #    print('osqp final time', solver.room_time, np.sum(solver.room_time))
-    osqp_time = tf2 - ts2 + tf1 - ts1
-    osqp_once_time = tf1 - ts1
-    print('osqp first computation time', osqp_once_time, 'osqp computation time: ', osqp_time)
-    osqp_convergence = solver.log
-    osqp_convergence[1::2] += osqp_once_time
-    
-
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)  # every time you have to reload from hard disk since it is modified before
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.trajectoryOrder = 6
-    print_green("Use Mosek + Adaptive LS")
+    #print_green("Use Mosek + Adaptive line search")
     
     solver = IndoorQPProblemMOSEK(tgp, verbose=False)
+    
     ts1 = time.time()
     solver.solve_once()
     tf1 = time.time()
-
-    print("initial plan cost", solver.obj)
-    print('Mosek inital time', solver.room_time)
+    initial_obj = solver.obj
+    mosek_once_time = tf1 - ts1
+   
     t_before_opt, coeff_before_opt = solver.get_output_coefficients()
     solver.grad_method = 'ours'
-    #solver.verbose = True
+
+    # extract initial trajectory
+    poly_coef = solver.get_coef_matrix().transpose((1,0,2))
+    #import pdb; pdb.set_trace()
+    break_points = np.insert(np.cumsum(solver.room_time), 0, 0.0)
+    initial_trajectory = BPoly(poly_coef, break_points)
+    tt_initial = np.linspace(0.0, break_points[-1], 100)
     
     ts2 = time.time()
     is_okay, converged = solver.refine_time_by_backtrack(max_iter=100, log=True, adaptiveLineSearch=True)
     tf2 = time.time()
-    print('mosek refine ', is_okay, converged, solver.converge_reason, solver.obj, 
-                'iter', solver.major_iteration, 'fval', solver.num_prob_solve)
-    #with np.printoptions(precision=2, suppress=True):
-    #    print('mosek final time', solver.room_time, np.sum(solver.room_time))
-    mosek_time = tf2 - ts2 + tf1 - ts1
-    mosek_once_time = tf1 - ts1
 
-    print('mosek first computation time', mosek_once_time, 'mosek computation time:', mosek_time)
+    #print(solver.room_time)
+
+    computation_time = (tf2 - ts2 + mosek_once_time) * 1000
+
+
+    #print('mosek first computation time', mosek_once_time, 'mosek computation time:', mosek_time)
     mosek_convergence = solver.log
     mosek_convergence[1::2] += mosek_once_time
 
     t_after_opt, coeff_after_opt = solver.get_output_coefficients()
 
+    result = [["Solver", "Mosek"], 
+                ["Solved?", is_okay],
+                #["Converged?", converged],
+                ["Initial Cost", round(initial_obj, 3)],
+                ["Final Cost", round(solver.obj,3)], 
+                ["Solve Time [ms]", round(computation_time, 2)],
+                ["# Major Iterations", solver.major_iteration], 
+                ["# Function Evaluation", solver.num_prob_solve]
+                ]
+    print("Results")
+    print(tabulate(result, tablefmt="psql", stralign="right", numalign="center"))
     
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)  # every time you have to reload from hard disk since it is modified before
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.trajectoryOrder = 6
-    print_green("Use Mosek + Mellinger")
-   
-    solver = IndoorQPProblemMOSEK(tgp, verbose=False)
-    ts1 = time.time()
-    solver.solve_once()
-    tf1 = time.time()
-    
-    print("initial plan cost", solver.obj)
-    t_before_opt, coeff_before_opt = solver.get_output_coefficients()
-    solver.grad_method = 'mel'
-    ts2 = time.time()
-    is_okay, converged = solver.refine_time_by_backtrack(max_iter=100, log=True, adaptiveLineSearch=True)
-    tf2 = time.time()
-    print('mosek refine ', is_okay, converged, solver.converge_reason, solver.obj, 
-                'iter', solver.major_iteration, 'fval', solver.num_prob_solve)
-    #with np.printoptions(precision=2, suppress=True):
-    #    print('mosek final time', solver.room_time, np.sum(solver.room_time))
-    
-    mosek_mel_time = tf2 - ts2 + tf1 - ts1
-    mosek_mel_once_time = tf1 - ts1
+    print("Initial time allocation:\n", np.round(initial_time_allocation, 2))
+    print("Final time allocation:\n", np.round(solver.room_time, 2))
 
-    print('mosek first computation time', mosek_mel_once_time, 'mosek computation time:', mosek_mel_time)
-    mosek_mel_convergence = solver.log
-    mosek_mel_convergence[1::2] += mosek_mel_once_time
-
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)  # every time you have to reload from hard disk since it is modified before
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.trajectoryOrder = 6
-    print_green("Use Sqopt + Mellinger")
-    
-    solver = IndoorQPProblemSQOPT(tgp, verbose=False)
-    ts1 = time.time()
-    solver.solve_once()
-    tf1 = time.time()
-    
-    print("initial plan cost", solver.obj)
-    t_before_opt, coeff_before_opt = solver.get_output_coefficients()
-    solver.grad_method = 'mel'
-
-    ts2 = time.time()
-    is_okay, converged = solver.refine_time_by_backtrack(max_iter=100, log=True, timeProfile=False, adaptiveLineSearch=False)
-    tf2 = time.time()
-    print('sqopt refine ', is_okay, converged, solver.converge_reason, solver.obj, 
-                'iter', solver.major_iteration, 'fval', solver.num_prob_solve)
-    #with np.printoptions(precision=2, suppress=True):
-    #    print('sqopt final time', solver.room_time, np.sum(solver.room_time))   
-    sqopt_mel_time = tf2 - ts2 + tf1 - ts1
-    sqopt_mel_once_time = tf1 - ts1
-
-    print('sqopt first computation time', sqopt_mel_once_time, 'sqopt computation time:', sqopt_mel_time)
-    sqopt_mel_convergence = solver.log
-    sqopt_mel_convergence[1::2] += sqopt_mel_once_time
-    #print('Time profile: -Grad', solver.timeProfile[::2], 'Percentage: ', 100*np.sum(solver.timeProfile[::2])/sqopt_mel_time)
-    #print('Time profile: -Alpha', solver.timeProfile[1::2], 'Percentage: ', 100*np.sum(solver.timeProfile[1::2])/sqopt_mel_time)
-    
-    
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)  # every time you have to reload from hard disk since it is modified before
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.trajectoryOrder = 6
-    print_green("Use Sqopt + Mellinger + Adaptive LS")
-    
-    solver = IndoorQPProblemSQOPT(tgp, verbose=False)
-    ts1 = time.time()
-    solver.solve_once()
-    tf1 = time.time()
-    
-    print("initial plan cost", solver.obj)
-    t_before_opt, coeff_before_opt = solver.get_output_coefficients()
-    solver.grad_method = 'mel'
-
-    ts2 = time.time()
-    is_okay, converged = solver.refine_time_by_backtrack(max_iter=100, log=True, timeProfile=False, adaptiveLineSearch=True)
-    tf2 = time.time()
-    print('sqopt refine ', is_okay, converged, solver.converge_reason, solver.obj, 
-                'iter', solver.major_iteration, 'fval', solver.num_prob_solve)
-    #with np.printoptions(precision=2, suppress=True):
-    #    print('sqopt final time', solver.room_time, np.sum(solver.room_time))   
-    sqopt_mel_time = tf2 - ts2 + tf1 - ts1
-    sqopt_mel_once_time = tf1 - ts1
-
-    print('sqopt first computation time', sqopt_mel_once_time, 'sqopt computation time:', sqopt_mel_time)
-    sqopt_mel_adaptive_convergence = solver.log
-    sqopt_mel_adaptive_convergence[1::2] += sqopt_mel_once_time
-
-
-    np.savez('data/prob_coeffs%d.npz' % prob, 
-        t_before_opt=t_before_opt, coeff_before_opt=coeff_before_opt,
-        t_after_opt=t_after_opt, coeff_after_opt=coeff_after_opt,
-        sqopt_convergence=sqopt_convergence, 
-        osqp_convergence=osqp_convergence, 
-        mosek_convergence=mosek_convergence,
-        mosek_mel_convergence=mosek_mel_convergence,
-        sqopt_mel_convergence=sqopt_mel_convergence,
-        sqopt_adaptive_convergence=sqopt_adaptive_convergence,
-        sqopt_mel_adaptive_convergence=sqopt_mel_adaptive_convergence)
-
-def testBFGS():
-    prob = 0
-    if len(sys.argv) > 1:
-        prob = int(sys.argv[1])
-
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    print("\033[1;92mTesting BFGS on problem: %d \033[0m" % prob)
-    print("initial room time", [round(box.t,2) for box in tgp.getCorridor()])
-    
-    
-    t0 = time.time()
-    solver = IndoorQPProblemSQOPT(tgp, verbose=False)
-    
-    solver.solve_once()
-    tf1 = time.time()
-    initialCost = solver.obj
-    t_before_opt, coeff_before_opt = solver.get_output_coefficients()
-    
-    solver.grad_method = 'ours'   
-    solver.verbose = True  
-    is_okay, converged = solver.refine_time_by_BFGS(max_iter=100, log=True)
-    tf = time.time()
-    t_after_opt, coeff_after_opt = solver.get_output_coefficients()
-    
-    print("initial plan cost", initialCost)
-    print('Sqopt refine ', is_okay, converged, solver.converge_reason, solver.obj, 
-                'iter', solver.major_iteration, 'fval', solver.num_prob_solve)
-    with np.printoptions(precision=2, suppress=True):
-        print('Sqopt final time', solver.room_time)
-    
-    sqopt_time = tf - t0
-    sqopt_once_time = tf1 - t0
-    print('Sqopt first computation time', sqopt_once_time, 'Sqopt total computation time:', sqopt_time)
-    sqopt_bfgs_convergence = solver.log
-
-    np.savez('data/prob_bfgs_coeffs%d.npz' % prob, 
-        t_before_opt=t_before_opt, coeff_before_opt=coeff_before_opt,
-        t_after_opt=t_after_opt, coeff_after_opt=coeff_after_opt,
-        sqopt_bfgs_convergence=sqopt_bfgs_convergence)
-
-
-def check_gradient():
-    prob = 0
-    if len(sys.argv) > 1:
-        prob = int(sys.argv[1])
-    print("Test on problem %d" % prob)
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)
-    print("initial room time", [round(box.t, 2) for box in tgp.getCorridor()])
-
-    print("SQOPT")
-    solver = IndoorQPProblemSQOPT(tgp, verbose=False)
-    solver.solve_once()
-    print('Sqopt gradient', solver.get_gradient())
-    print("MOSEK")
-    solver2 = IndoorQPProblemMOSEK(tgp, verbose=False)
-    solver2.solve_once()
-    print('mosek gradient', solver2.get_gradient())
-    print('obj: %f %f' % (solver.obj, solver2.obj))
-    print('sol diff %f' % np.linalg.norm(solver.sol - solver2.sol))
-    print('lmdy diff %f' % np.linalg.norm(solver.lmdy - solver2.lmdy))
-    print('lmdz diff %f' % np.linalg.norm(solver.lmdz - solver2.lmdz))
-    print('lmdy ', solver.lmdy[np.abs(solver.lmdy) > 1e-3], solver2.lmdy[np.abs(solver2.lmdy) > 1e-3])
-    print('lmdz ', solver.lmdz[np.abs(solver.lmdz) > 1e-3], solver2.lmdz[np.abs(solver2.lmdz) > 1e-3])
-
-
-def test_osqp_solver():
-    prob = 0
-    if len(sys.argv) > 1:
-        prob = int(sys.argv[1])
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)
-    print(tgp.position)
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.maxVelocity = 100
-    solver = IndoorQPProblemOSQP(tgp, verbose=False)
-    solver.solve_once()
-    n_var_per_room = 3 * (solver.poly_order + 1)
-    sol = np.concatenate([solver.sol[i*n_var_per_room: (i+1)*n_var_per_room] * solver.room_time[i] for i in range(solver.num_box)])
-    print(solver.is_solved, solver.obj, sol)
-
-
-def test_mosek_solver():
-    prob = 20
-    if len(sys.argv) > 1:
-        prob = int(sys.argv[1])
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)
-    print(tgp.position)
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.maxVelocity = 100
-    solver = IndoorQPProblemMOSEK(tgp, verbose=True)
-    solver.solve_once()
-    n_var_per_room = 3 * (solver.poly_order + 1)
-    sol = np.concatenate([solver.sol[i*n_var_per_room: (i+1)*n_var_per_room] * solver.room_time[i] for i in range(solver.num_box)])
-    print(solver.is_solved, solver.obj, sol)
-
-
-def test_mosek_naive_case():
-    prob = 0
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)
-    pos = tgp.get_position()
-    box = tgp.getCorridor()[0]
-    print(box.getBox())
-    pos[0] = [-20, -20, 1]
-    pos[1] = [-19, -20, 1]
-    print(tgp.position)
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.trajectoryOrder = 5
-    tgp.maxVelocity = 100
-    tgp.updateCorridorTime([2])  # let the corridor be 2 seconds
-    print('time', tgp.getCorridor()[0].t)
-    solver = IndoorQPProblemMOSEK(tgp, verbose=False)
-    solver.solve_once()
-    print('mqm', solver.MQM)
-    print("P ", solver.sp_P.toarray()[:6, :6])
-    n_var_per_room = 3 * (solver.poly_order + 1)
-    sol = np.concatenate([solver.sol[i*n_var_per_room: (i+1)*n_var_per_room] * solver.room_time[i] for i in range(solver.num_box)])
-    print(solver.is_solved, solver.obj, sol)
-
-def test_mosek_case():
-    tgp = loadTGP('dataset/tgp_%d.tgp' % 27)
-    print("\033[1;92mTesting on problem: %d \033[0m" % 27)
-    print("initial room time", [round(box.t,2) for box in tgp.getCorridor()])
-
-    t0 = time.time()
-    solver = IndoorQPProblemMOSEK(tgp, verbose=True)
-    candy = np.array([ 0.8936, 1.1442, 0.8448, 1.1877, 0.7909, 0.0221, 3.4663, 0.1477, 0.4696, 0.7575, 1.1961, 12.0162])
-    candy2 = np.array([8.9560e-01, 1.1462e+00, 8.4679e-01, 1.1897e+00, 7.9294e-01, 9.5743e-07, 3.4683e+00, 1.4965e-01, 4.7158e-01, 7.5952e-01, 1.1981e+00, 1.2018e+01])
-    solver.solve_with_room_time(candy2)
-    print(solver.is_solved, solver.obj)
-
-def test_mosek_active_constraints():
-    prob = 0
-    if len(sys.argv) > 1:
-        prob = int(sys.argv[1])
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)
-    print("\033[1;92mTesting on problem: %d \033[0m" % prob)
-    print("initial room time", [round(box.t,2) for box in tgp.getCorridor()])
-
-    #t0 = time.time()
-    solver = IndoorQPProblemMOSEK(tgp, verbose=True)
-    #candy = np.array([ 0.8936, 1.1442, 0.8448, 1.1877, 0.7909, 0.0221, 3.4663, 0.1477, 0.4696, 0.7575, 1.1961, 12.0162])
-    #candy2 = np.array([8.9560e-01, 1.1462e+00, 8.4679e-01, 1.1897e+00, 7.9294e-01, 9.5743e-07, 3.4683e+00, 1.4965e-01, 4.7158e-01, 7.5952e-01, 1.1981e+00, 1.2018e+01])
-    solver.solve_once()
-    slacks = solver.sp_A.dot(solver.sol)
-    variableMask = np.where((solver.sol <= solver.xlb + 1e-7) | (solver.sol >= solver.xub - 1e-7))[0]
-    slacksMask = np.where((slacks <= solver.clb + 1e-7) | (slacks >= solver.cub - 1e-7))[0]
-    print('Variable Mask', variableMask)
-    print('slacks Mask', slacksMask)
-    #solver.solve_with_room_time(candy2)
-    #print(solver.is_solved, solver.obj)
-
-def check_prob_two():
-    tgp = loadTGP('dataset/tgp_2.tgp')
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    solver = IndoorQPProblemMOSEK(tgp, verbose=2)
-    solver.solve_once()
-    print(solver.is_solved, solver.obj)
-
-
-def test_grad_active_constr():
-    """Test gradient the same issue"""
-    prob = 0
-    if len(sys.argv) > 1:
-        prob = int(sys.argv[1])
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    solver = IndoorQPProblemMOSEK(tgp, verbose=True)
-    solver.solve_once()
-    grad = solver.get_gradient()
-    print('grad is ', grad)
-    n_var_per_room = 3 * (solver.poly_order + 1)
-    active_idx = np.where(np.abs(solver.lmdz) > 1e-6)[0]
-    room_id = active_idx // n_var_per_room
-    print('active room ', room_id)
-
-def compareDifferentTimes():
-    prob = 400
-    if len(sys.argv) > 1:
-        prob = int(sys.argv[1])
-
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)  # every time you have to reload from hard disk since it is modified before
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.trajectoryOrder = 6
-    #print("unrefined room time", [round(box.t,2) for box in tgp.getCorridor()])
-    #import pdb
-    #pdb.set_trace()
-    #print_green("Use Sqopt")
-    
-    solver = IndoorQPProblemSQOPT(tgp, verbose=False)
-    #solver = IndoorQPProblemMOSEK(tgp, verbose=False)
-    #solver.room_time = 1/0.82*solver.room_time
-    
-    ts1 = time.time()
-    solver.solve_once()
-    tf1 = time.time()
-    #solver.solve_with_room_time(1/0.82*solver.room_time)
-
-    t1, p1 = solver.get_output_coefficients()
-    
-    initialCost = solver.obj
-    solver.grad_method = 'ours'
-    
-    #solver.verbose = True
-    ts2 = time.time()
-    is_okay, converged = solver.refine_time_by_backtrack(max_iter=100, log=True, timeProfile=False, adaptiveLineSearch=False)
-    tf2 = time.time()
-    print("initial plan cost", initialCost)
-    print('Sqopt refine ', is_okay, converged, solver.converge_reason, solver.obj, 
-                'iter', solver.major_iteration, 'fval', solver.num_prob_solve)
-    #with np.printoptions(precision=2, suppress=True):
-    #    print('Sqopt final time', solver.room_time)
-    sqopt_time = tf2 - ts2 + tf1 - ts1
-    sqopt_once_time = tf1 - ts1
-    print('Sqopt first computation time', sqopt_once_time, 'Sqopt total computation time:', sqopt_time)
-    sqopt_convergence = solver.log
-    sqopt_convergence[1::2] += sqopt_once_time
-    print("refined room time", [round(box.t,2) for box in tgp.getCorridor()])
-
-    t2, p2 = solveScaled(prob, 80.0)
-
-    v1 = piecewisePolyDeriv(p1, t1, orderOfDerivative = 1)
-    v2 = piecewisePolyDeriv(p2, t2, orderOfDerivative = 1)
-    
-    a1 = piecewisePolyDeriv(p1, t1, orderOfDerivative = 2)
-    a2 = piecewisePolyDeriv(p2, t2, orderOfDerivative = 2)
-    
-    j1 = piecewisePolyDeriv(p1, t1, orderOfDerivative = 3)
-    j2 = piecewisePolyDeriv(p2, t2, orderOfDerivative = 3)
-    
-    s1 = piecewisePolyDeriv(p1, t1, orderOfDerivative = 4)
-    s2 = piecewisePolyDeriv(p2, t2, orderOfDerivative = 4)
-    
-    sample_time_1, samples_1 = evaluatePiecewisePolyWhole(p1, t1)
-    sample_time_2, samples_2 = evaluatePiecewisePolyWhole(p2, t2)
-    
-    sample_time_vt1, samples_v1 = evaluatePiecewisePolyWhole(v1, t1)
-    sample_time_vt2, samples_v2 = evaluatePiecewisePolyWhole(v2, t2)
-    
-    sample_time_at1, samples_a1 = evaluatePiecewisePolyWhole(a1, t1)
-    sample_time_at2, samples_a2 = evaluatePiecewisePolyWhole(a2, t2)
-    
-    sample_time_jt1, samples_j1 = evaluatePiecewisePolyWhole(j1, t1)
-    sample_time_jt2, samples_j2 = evaluatePiecewisePolyWhole(j2, t2)
-
-    sample_time_st1, samples_s1 = evaluatePiecewisePolyWhole(s1, t1)
-    sample_time_st2, samples_s2 = evaluatePiecewisePolyWhole(s2, t2)
-    
-    connection_t1, connection_p1 = evaluatePiecewisePolyOne2(p1, t1, np.cumsum(t1)[:-1])
-    connection_t2, connection_p2 = evaluatePiecewisePolyOne2(p2, t2, np.cumsum(t2)[:-1])
-    
-    connection_t1, connection_v1 = evaluatePiecewisePolyOne2(v1, t1, np.cumsum(t1)[:-1])
-    connection_t2, connection_v2 = evaluatePiecewisePolyOne2(v2, t2, np.cumsum(t2)[:-1])
-    
-    connection_t1, connection_a1 = evaluatePiecewisePolyOne2(a1, t1, np.cumsum(t1)[:-1])
-    connection_t2, connection_a2 = evaluatePiecewisePolyOne2(a2, t2, np.cumsum(t2)[:-1])
-    
-    connection_t1, connection_j1 = evaluatePiecewisePolyOne2(j1, t1, np.cumsum(t1)[:-1])
-    connection_t2, connection_j2 = evaluatePiecewisePolyOne2(j2, t2, np.cumsum(t2)[:-1])
-
-    connection_t1, connection_s1 = evaluatePiecewisePolyOne2(s1, t1, np.cumsum(t1)[:-1])
-    connection_t2, connection_s2 = evaluatePiecewisePolyOne2(s2, t2, np.cumsum(t2)[:-1])
-
-    saveToSeparatePdf = False
-    
-    fig_pos = plotSamples(sample_time_1, samples_1, connection_t1, connection_p1, sample_time_2, samples_2, connection_t2, connection_p2, "Position", r"Position [$m$]", heading=True)
-    if saveToSeparatePdf is True:
-        plt.savefig('trj_pos.pdf')
-    fig_vel = plotSamples(sample_time_vt1, samples_v1, connection_t1, connection_v1, sample_time_vt2, samples_v2, connection_t2, connection_v2, "Velocity", r"Velocity [$m/s$]", plotConnection=True)
-    if saveToSeparatePdf is True:
-        plt.savefig('trj_vel.pdf')
-    fig_acc = plotSamples(sample_time_at1, samples_a1, connection_t1, connection_a1, sample_time_at2, samples_a2, connection_t2, connection_a2, "Acceleration", r"Acceleration [$m/s^{2}$]", plotConnection=True)
-    if saveToSeparatePdf is True:
-        plt.savefig('trj_acc.pdf')
-    fig_jerk = plotSamples(sample_time_jt1, samples_j1, connection_t1, connection_j1, sample_time_jt2, samples_j2, connection_t2, connection_j2, "Jerk", r"Jerk [$m/s^{3}$]", plotConnection=False)
-    if saveToSeparatePdf is True:
-        plt.savefig('trj_jerk.pdf')
-    fig_snap = plotSamples(sample_time_st1, samples_s1, connection_t1, connection_s1, sample_time_st2, samples_s2, connection_t2, connection_s2, "Snap", r"Snap [$m/s^{3}$]")
-    if saveToSeparatePdf is True:
-        plt.savefig('trj_snap.pdf')
-
-
-
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    #ax.set_aspect('equal')
-
-    boxes = tgp.getCorridor()
-
-    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-
-    for i in range(len(boxes)):
-        vertices = boxes[i].vertex
-        ax.scatter(vertices[:, 0], vertices[:, 1], vertices[:, 2], s=1)
-        Z = vertices
+    if DO_PLOT_RESULTS:
+        poly_coef = solver.get_coef_matrix2()
+        break_points = np.insert(np.cumsum(t_after_opt), 0, 0.0)
+        final_trajectory = BPoly(poly_coef, break_points)
+        tt_final = np.linspace(0.0, break_points[-1], 100)
         
-        verts = [[Z[0],Z[1],Z[2],Z[3]],
-                 [Z[4],Z[5],Z[6],Z[7]], 
-                 [Z[0],Z[1],Z[5],Z[4]], 
-                 [Z[2],Z[3],Z[7],Z[6]], 
-                 [Z[1],Z[2],Z[6],Z[5]],
-                 [Z[4],Z[7],Z[3],Z[0]], 
-                 [Z[2],Z[3],Z[7],Z[6]]]
+        # plot 3D trajectory
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        boxes = tgp.getCorridor()
+        
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-        # plot sides
-        pc = Poly3DCollection(verts, alpha = 0.02, facecolor='gray', linewidths=0.1, edgecolors='red')
+        for i in range(len(boxes)):
+            vertices = boxes[i].vertex
+            ax.scatter(vertices[:, 0], vertices[:, 1], vertices[:, 2], s=1)
+            Z = vertices            
+            verts = [[Z[0],Z[1],Z[2],Z[3]],
+                     [Z[4],Z[5],Z[6],Z[7]], 
+                     [Z[0],Z[1],Z[5],Z[4]], 
+                     [Z[2],Z[3],Z[7],Z[6]], 
+                     [Z[1],Z[2],Z[6],Z[5]],
+                     [Z[4],Z[7],Z[3],Z[0]], 
+                     [Z[2],Z[3],Z[7],Z[6]]]
 
-        ax.add_collection3d(pc)
+            # plot safe corridor
+            pc = Poly3DCollection(verts, alpha = 0.02, facecolor='gray', linewidths=0.1, edgecolors='red')
+            ax.add_collection3d(pc)
 
-    plot3dTrajectory(ax, samples_1, samples_2, connection_t1,connection_p1, connection_t2,connection_p2, plotConnection=False, plotTiming=False)
+        ax.plot(initial_trajectory(tt_initial)[:,0], initial_trajectory(tt_initial)[:,1], initial_trajectory(tt_initial)[:,2], label="Before refinement")
+        ax.plot(final_trajectory(tt_final)[:,0], final_trajectory(tt_final)[:,1], final_trajectory(tt_final)[:,2], label="After refinement")
+        #import pdb; pdb.set_trace()
+        ax.scatter(tgp.position[0,0], tgp.position[0,1], tgp.position[0,2], marker="*", s=20, label="Start")
+        ax.scatter(tgp.position[1,0], tgp.position[1,1], tgp.position[1,2], marker="o", s=20, label="Goal")
+        set_axes_equal(ax)
+        ax.set_axis_off()
+        ax.legend()
+        ax.set_title("3D trajectory")
 
-    set_axes_equal(ax)
-    ax.set_axis_off()
+        # plot velocity/acceleration
+        fig, ax = plt.subplots(3, 1, figsize=(6,7))
+        for i in range(3):
+            ax[i].plot(tt_initial, initial_trajectory(tt_initial, 1)[:, i], '-.', label="Before refinement")
+            ax[i].plot(tt_final, final_trajectory(tt_final, 1)[:, i], label="After refinement")
+            if i == 0:
+                ax[i].set_title("X Velocity")
+            elif i == 1:
+                ax[i].set_title("Y Velocity")
+            elif i == 2:
+                ax[i].set_title("Z Velocity")
+            else:
+                pass
+            ax[i].legend()
+            ax[i].grid()
+        plt.tight_layout()
+        
 
-    plt.show()
+        # plot acceleration
+        fig, ax = plt.subplots(3, 1, figsize=(6,7))
+        for i in range(3):
+            ax[i].plot(tt_initial, initial_trajectory(tt_initial, 2)[:, i], '-.', label="Before refinement")
+            ax[i].plot(tt_final, final_trajectory(tt_final, 2)[:, i], label="After refinement")
+            if i == 0:
+                ax[i].set_title("X Acceleration")
+            elif i == 1:
+                ax[i].set_title("Y Acceleration")
+            elif i == 2:
+                ax[i].set_title("Z Acceleration")
+            else:
+                pass
+            ax[i].legend()
+            ax[i].grid()
+        plt.tight_layout()
+
+
+
+        plt.show()
+
 
 def set_axes_equal(ax):
     '''Make axes of 3D plot have equal scale so that spheres appear as spheres,
@@ -1493,204 +968,11 @@ def set_axes_equal(ax):
     ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
     ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
 
-def solveScaled(prob, scale=1.0):
-    print_purple("In Scaled")
-
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)  # every time you have to reload from hard disk since it is modified before
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.trajectoryOrder = 6
-
-    solver = IndoorQPProblemSQOPT(tgp, tfweight=scale, verbose=False)
-
-    print("unrefined room time", solver.room_time, np.sum(solver.room_time))
-
-    #solver.room_time *= scale
-    #solver.room_time = 1.0*np.sum(solver.room_time)/len(solver.room_time)*np.ones(len(solver.room_time))
-
-    #print("unrefined scaled room time", solver.room_time, np.sum(solver.room_time))
-
-
-    ts1 = time.time()
-    solver.solve_once()
-    tf1 = time.time()
-
-    initialCost = solver.obj
-    solver.grad_method = 'ours'
-    
-    #solver.verbose = True
-    ts2 = time.time()
-    is_okay, converged = solver.refine_time_by_backtrack(max_iter=100, log=True, timeProfile=False, adaptiveLineSearch=False)
-    tf2 = time.time()
-    print("initial plan cost", initialCost)
-    print('Sqopt refine ', is_okay, converged, solver.converge_reason, solver.obj, 
-                'iter', solver.major_iteration, 'fval', solver.num_prob_solve)
-    #with np.printoptions(precision=2, suppress=True):
-    #    print('Sqopt final time', solver.room_time)
-    sqopt_time = tf2 - ts2 + tf1 - ts1
-    sqopt_once_time = tf1 - ts1
-    print('Sqopt first computation time', sqopt_once_time, 'Sqopt total computation time:', sqopt_time)
-    sqopt_convergence = solver.log
-    sqopt_convergence[1::2] += sqopt_once_time
-
-    refined_time = np.array([round(box.t,2) for box in tgp.getCorridor()])
-    print("refined room time", refined_time, np.sum(refined_time))
-    print("cost - time: ", solver.obj - scale * np.sum(refined_time))
-
-    return solver.get_output_coefficients()
-    
-    
-def testChopping():
-    prob = 0
-    if len(sys.argv) > 1:
-        prob = int(sys.argv[1])
-    tgp = loadTGP('dataset/tgp_%d.tgp' % prob)
-
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.trajectoryOrder = 6
-
-    #solver = IndoorQPProblemSQOPT(tgp, verbose=True)
-    solver = IndoorQPProblemOSQP(tgp, verbose=True)
-    solver.solve_once()
-
-    t, poly_coeffs = solver.get_output_coefficients()
-    print(t)
-    print(poly_coeffs[:,:,0])
-    print(poly_coeffs[:,:,1])
-
-
-
-    boxes = tgp.getCorridor()
-
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-
-    for i in range(len(boxes)):
-        vertices = boxes[i].vertex
-        ax.scatter(vertices[:, 0], vertices[:, 1], vertices[:, 2], s=1)
-        Z = vertices
-        
-        verts = [[Z[0],Z[1],Z[2],Z[3]],
-                 [Z[4],Z[5],Z[6],Z[7]], 
-                 [Z[0],Z[1],Z[5],Z[4]], 
-                 [Z[2],Z[3],Z[7],Z[6]], 
-                 [Z[1],Z[2],Z[6],Z[5]],
-                 [Z[4],Z[7],Z[3],Z[0]], 
-                 [Z[2],Z[3],Z[7],Z[6]]]
-
-        # plot sides
-        pc = Poly3DCollection(verts, alpha = 0.02, facecolor='gray', linewidths=0.1, edgecolors='red')
-        #pc.set_alpha(0.1)
-        #pc.set_facecolor('cyan')
-        
-        #face_color = [0.5, 0.5, 1] # alternative: matplotlib.colors.rgb2hex([0.5, 0.5, 1])
-        #pc.set_facecolor('none')
-
-        ax.add_collection3d(pc)
-
-    ax.axis('off')
-
-    plt.show()
-
-
-def use_mosek_bezier_coef():
-    prob = 11
-    if len(sys.argv) > 1:
-        prob = int(sys.argv[1])
-
-    tgp = loadTGP('ral_tgp/tgp_%d.tgp' % prob)  # every time you have to reload from hard disk since it is modified before
-    tgp.doLimitVelocity = False
-    tgp.minimizeOrder = 3
-    tgp.trajectoryOrder = 6
-    #import pdb
-    #pdb.set_trace()
-    #tgp.velocity = 0.0
-    #tgp.acceleration = 0.0
-    print(tgp.position)
-    print(tgp.velocity)
-    print(tgp.acceleration)
-    print_red("Bezier coefs for RA-L:", end=" ")
-    print_cyan("No.%d" % prob, end=" ")
-    print_green("Mosek + Adaptive LS")
-    
-    solver = IndoorQPProblemMOSEK(tgp, verbose=False)
-    ts1 = time.time()
-    solver.solve_once()
-    tf1 = time.time()
-
-    print("initial plan cost", solver.obj)
-    print('Mosek inital time', solver.room_time, "Total", np.sum(solver.room_time))
-    t_before_opt, coeff_before_opt = solver.get_output_coefficients()
-    solver.grad_method = 'ours'
-    #solver.verbose = True
-    
-    ts2 = time.time()
-    is_okay, converged = solver.refine_time_by_backtrack(max_iter=100, log=True, adaptiveLineSearch=True)
-    tf2 = time.time()
-    print('mosek refine ', is_okay, converged, solver.converge_reason, solver.obj, 
-                'iter', solver.major_iteration, 'fval', solver.num_prob_solve)
-    #with np.printoptions(precision=2, suppress=True):
-    #    print('mosek final time', solver.room_time, np.sum(solver.room_time))
-    mosek_time = tf2 - ts2 + tf1 - ts1
-    mosek_once_time = tf1 - ts1
-
-    print('mosek first computation time', mosek_once_time, 'mosek computation time:', mosek_time)
-    mosek_convergence = solver.log
-    mosek_convergence[1::2] += mosek_once_time
-
-    t_after_opt, coeff_after_opt = solver.get_output_coefficients()
-    poly_coef = solver.get_coef_matrix()
-    poly_coef = poly_coef.transpose((1,0,2))
-    
-    if False:
-        break_points = np.insert(np.cumsum(t_after_opt), 0, 0.0)
-        break_points2 = np.arange(break_points.size)
-        
-        bp = BPoly(poly_coef, break_points)
-        bp2 = BPoly(poly_coef, break_points2)
-
-        #import pdb
-        #pdb.set_trace()
-
-        kkt = np.linspace(0.0, break_points[-1], 100)
-        kkt2 = np.linspace(0.0, break_points2[-1], 100)
-        
-        plt.plot(bp(kkt)[:,0], bp(kkt)[:,1], '-..', label='bp: tro t')
-        plt.plot(bp2(kkt2)[:,0], bp2(kkt2)[:,1], '.', label='bp2: uniform t')
-        plt.legend()
-        plt.show()
-    
-    if True:
-        np.savez('ral_init/prob%d.npz' % prob, poly_coef=poly_coef, t_after_opt=t_after_opt)
 
 
 def main():
-    np.set_printoptions(precision=4, linewidth=10000)
-    #test_grad_active_constr()  # this functions checks relation between # unique gradients and # active inequality constraints
-
-    # check_prob_two()
-    # test_mosek_case()
     
-    testIPBackTrack()
-
-    # compareDifferentTimes()
-    
-    # test_osqp_solver()
-    # test_mosek_solver()
-    # test_mosek_naive_case()
-    # check_gradient()
-    # testSQOPTSolver()
-    # print("hi missy")
-    # test_mosek_active_constraints()
-    # testBFGS()
-    
-    # testChopping()
-    
-    # use_mosek_bezier_coef()
-
+    solveProblem()
 
 if __name__ == '__main__':
-    # print("hi missy")
     main()
-    # print("Hi again")

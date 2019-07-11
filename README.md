@@ -9,6 +9,10 @@ cd build
 cmake ..
 make
 ```
+* Run example
+```python
+python spatialSolver.py 58
+```
 
 ### Dependencies
 Please make sure that the following packages are installed, which means that they can be found through CMake's find_package command.  
