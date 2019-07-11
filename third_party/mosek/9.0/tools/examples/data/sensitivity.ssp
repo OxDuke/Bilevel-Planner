@@ -1,0 +1,13 @@
+* Comment 1
+
+BOUNDS CONSTRAINTS
+ U "c1"         * Analyze upper bound for constraints named c1 
+ U 2            * Analyze upper bound for constraints with index 2 
+ U 3-5          * Analyze upper bound for constraint with index in interval [3:5] 
+
+VARIABLES CONSTRAINTS
+ L 2-4          * This section specifies which bounds on variables should be analyzed.  
+ L "x11" 
+OBJECTIVE CONSTRAINTS
+ "x11"          * This section specifies which objective coeficients should be analysed. 
+ 2

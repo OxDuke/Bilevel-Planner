@@ -8,24 +8,25 @@ find_package(pybind11 REQUIRED)
 set(Eigen3_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIR})
 include_directories(${Boost_INCLUDE_DIR})
 include_directories(${PROJECT_SOURCE_DIR}/include)
-set(PYLIBDIR ${PROJECT_SOURCE_DIR})
-message("All Python Library will be in ${PYLIBDIR}")
+message("All Python Libraries will be in ${PROJECT_SOURCE_DIR}")
 
-# detect if on mac or unix
-if ("${CMAKE_SYSTEM}" MATCHES "Linux")
-    set(THIRD_DIR ${PROJECT_SOURCE_DIR}/third_party)
-    # set up for mosek
-    set(MOSEK_DIR ${THIRD_DIR}/mosek/8/tools/platform/linux64x86)
-    link_directories(${MOSEK_DIR}/bin)
-    include_directories(${MOSEK_DIR}/h)
-else (UNIX)
-    include_directories(${PROJECT_SOURCE_DIR}/third_party/mosek/8/tools/platform/osx64x86/h)
-    link_directories(${PROJECT_SOURCE_DIR}/third_party/mosek/8/tools/platform/osx64x86/bin)    
-endif (UNIX)
+# detect if on mac or unix, and include Mosek
+set(MOSEK_DIR ${PROJECT_SOURCE_DIR}/third_party/mosek/9/tools/platform)
+
+
+if(${UNIX})
+    message("Unix detected!")
+    include_directories(${MOSEK_DIR}/osx64x86/h)
+    link_directories(${MOSEK_DIR}/osx64x86/bin)    
+elseif("${CMAKE_SYSTEM}" MATCHES "Linux")
+    message("Linux detected!")
+    link_directories(${MOSEK_DIR}/linux64x86/bin)
+    include_directories(${MOSEK_DIR}/linux64x86/h)
+endif (${UNIX})
 
 
 set(CMAKE_CXX_FLAGS "-std=c++0x ${CMAKE_CXXFLAGS} -O3 -Wall")
-set( CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin )
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin )
 
 # libbezier module defines the matrices used in the optimization
 pybind11_add_module(bezier MODULE src/bezier_base.cpp src/bezier_wrapper.cpp include/ott/bezier_base.h)
