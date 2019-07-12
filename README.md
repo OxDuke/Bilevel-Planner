@@ -2,10 +2,10 @@
 by researchers from the [Intelligent Motion Lab](http://motion.pratt.duke.edu/) at Duke University
 
 ## Overview
-This package is a stand-alone implementation of our UAV trajectory generator. It is able to generate optimal (minimizing jerk/snap and traversal time) trajectories in real-time.
+This package is a stand-alone implementation of our UAV trajectory generator. It is able to generate optimal (minimizing jerk/snap and traversal time) trajectories in real-time. For example, trajectories for flying through a gazebo in a forest is shown below:
 
-<!--img src="images/pointcloud.png" alt="Flying through a gazebo" width="500"/>
-<img src="images/boxes.png" alt="Flying through a gazebo" width="300"/-->
+<img src="images/pointcloud.png" alt="Flying through a gazebo" width="300"/>
+<!--img src="images/boxes.png" alt="Flying through a gazebo" width="200"/-->
 
 ## Usage
 
@@ -53,6 +53,8 @@ make
 cd ..
 python spatialSolver.py 58
 ```
+* At this stage, you should see several figures popping up and some results printed in the terminal:
+<img src="images/terminal.png" alt="Terminal screenshot" width="600"/>
 * Run more examples: There are 100 examples included in the "dataset/" directory. If you want to run the i-th (i = 1, ..., 100) example, run:
 ```bash
 python spatialSolver.py i
