@@ -34,3 +34,6 @@
 # Build Directory
 build
 bin
+
+# DS_Store
+.DS_Store
