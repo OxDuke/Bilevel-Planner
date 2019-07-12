@@ -1,5 +1,5 @@
 # Bilevel Planner
-by researchers from [Intelligent Motion Lab](http://motion.pratt.duke.edu/) at Duke University
+by researchers from the [Intelligent Motion Lab](http://motion.pratt.duke.edu/) at Duke University
 
 ## Overview
 This package is a stand-alone implementation of our UAV trajectory generator. It is able to generate optimal (minimizing jerk/snap and traversal time) trajectories in real-time.
@@ -10,9 +10,9 @@ This package is a stand-alone implementation of our UAV trajectory generator. It
 ## Usage
 
 ### System Requirements
-This package only relies on valid a C++ complier and a Python interpretor. We have tested it on macOS High Sierra and Ubuntu 16.04.
+This package only requires a C++ complier and a Python interpretor. We have tested it on **macOS** High Sierra and **Ubuntu** 16.04.
 
-### License for Mosek
+### License for **Mosek**
 This implementation relies on Mosek, a commercial QP solver that provides free license for educational purpose. One can obtain a free personal academic license from [here](https://www.mosek.com/products/academic-licenses/), and place it inside a folder name "mosek" in the home directory. 
 
 ### Dependencies
@@ -64,8 +64,11 @@ python spatialSolver.py i
 
 
 ## Theory
-The theory of this planner is described in the paper:
+The theory of this planner is described in the paper:  
 [Fast  UAV  Trajectory  Optimization  using  BilevelOptimization  with  Analytical  Gradients](https://arxiv.org/pdf/1811.10753.pdf)
+
+## More
+* To get the most of our software, we recommend using [Sqopt](https://ccom.ucsd.edu/~optimizers/solvers/sqopt/) to solve the QP. Unfortunately, Sqopt is not available as a free software, it comes along with [SNOPT](http://www.sbsi-sol-optimize.com/asp/sol_product_snopt.htm). If you have a copy of Sqopt and are interested in using it as the QP solver, please contact us.
 
 ## Contact
 If you any problems with this package or the paper, feel free to report an issue or contact us.
