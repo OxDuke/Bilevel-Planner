@@ -887,7 +887,7 @@ def solveProblem():
                      [Z[2],Z[3],Z[7],Z[6]]]
 
             # plot safe corridor
-            pc = Poly3DCollection(verts, alpha = 0.02, facecolor='gray', linewidths=0.1, edgecolors='red')
+            pc = Poly3DCollection(verts, alpha = 0.0, facecolor='gray', linewidths=0.1, edgecolors='red')
             ax.add_collection3d(pc)
 
         ax.plot(initial_trajectory(tt_initial)[:,0], initial_trajectory(tt_initial)[:,1], initial_trajectory(tt_initial)[:,2], label="Before refinement")
