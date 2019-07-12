@@ -1,4 +1,5 @@
 # Bilevel Planner
+by researchers from [Intelligent Motion Lab](http://motion.pratt.duke.edu/) at Duke University
 
 ## Overview
 This package is a stand-alone implementation of our UAV trajectory generator. It is able to generate optimal (minimizing jerk/snap and traversal time) trajectories in real-time.
@@ -67,5 +68,5 @@ The theory of this planner is described in the paper:
 [Fast  UAV  Trajectory  Optimization  using  BilevelOptimization  with  Analytical  Gradients](https://arxiv.org/pdf/1811.10753.pdf)
 
 ## Contact
-If you any problems with this package, feel free to report an issue or contact us.
+If you any problems with this package or the paper, feel free to report an issue or contact us.
 <!--Weidong Sun, Gao Tang, Kris Hauser-->
